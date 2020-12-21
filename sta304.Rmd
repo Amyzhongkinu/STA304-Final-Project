@@ -1,0 +1,383 @@
+---
+title: "Analysing the effects of higher education on voters' preferences"
+author: "Xinyu Zhong"
+date: "December 21, 2020"
+output: pdf_document
+---
+
+\begin{center} 
+github: https://github.com/Amyzhongkinu/STA304-Final-Project
+\end{center} 
+
+\newpage
+
+
+```{r echo=F, include=F}
+library(haven)
+library(tidyverse)
+library(broom)
+library(arm)
+library(labelled)
+library(ggpubr)
+library(MASS)
+library(tableone)
+```
+
+
+```{r echo=F, include=F}
+#Read in the data
+raw_survey <- read_dta("ns20200625.dta")
+#Add the labels
+raw_survey <- labelled::to_factor(raw_survey)
+#Select certain variables
+reduced_survey <- 
+  raw_survey %>% 
+  dplyr::select(registration,
+                vote_intention,
+                vote_2020,
+                age,
+                gender,
+                race_ethnicity,
+                education,
+                employment,
+                state,
+                household_income
+                )
+#check the values in the dataset
+summary(reduced_survey)
+
+```
+
+```{r echo=F, include=F}
+## Adjust Data types
+reduced_survey$age<-as.numeric(reduced_survey$age)
+
+## Filter on survey 
+# registration: assume people have not registration may registrate later
+# age : the minimum age in the survey is 18 so do not need to filter age
+# vote_intention: only consider people are eligle to vote
+filtered_survey<-reduced_survey %>% 
+  dplyr::filter(vote_intention != "No, I am not eligible to vote")
+
+#create variable 'edu_high' by mutate education categories
+high_edu <-c("Associate Degree","College Degree (such as B.A., B.S.)", "Completed some graduate, but no degree","Masters degree", "Doctorate degree ")
+filtered_survey$edu_high<-ifelse(filtered_survey$education %in%  high_edu, 1, 0)
+filtered_survey$edu_high<-as.factor(filtered_survey$edu_high)
+
+# remove the cases that consists of NAs
+filtered_survey<-na.omit(filtered_survey)
+
+# remove raw survey and reduced survey dataset
+rm(raw_survey,reduced_survey)
+```
+
+```{r echo=F, include=F}
+
+age_data <- rbind(filtered_survey %>% filter(edu_high==1)%>% group_by(age) %>%
+                    summarise(frequence = n()/nrow(filtered_survey)*100, type="higher eduction"), 
+                  filtered_survey %>% filter(edu_high==0)%>% group_by(age) %>%
+                    summarise(frequence = n()/nrow(filtered_survey)*100, type="not higher education"))
+
+gender_data <- rbind(filtered_survey %>% filter(edu_high==1)%>% group_by(gender) %>%
+                    summarise(frequence = n()/nrow(filtered_survey)*100, type="higher eduction"), 
+                  filtered_survey %>% filter(edu_high==0)%>% group_by(gender) %>%
+                    summarise(frequence = n()/nrow(filtered_survey)*100, type="not higher education"))
+
+household_income_data <- rbind(filtered_survey %>% filter(edu_high==1)%>% group_by(household_income) %>%
+                    summarise(frequence = n()/nrow(filtered_survey)*100, type="higher eduction"), 
+                  filtered_survey %>% filter(edu_high==0)%>% group_by(household_income) %>%
+                    summarise(frequence = n()/nrow(filtered_survey)*100, type="not higher education"))
+
+race_ethnicity_data <- rbind(filtered_survey %>% filter(edu_high==1)%>% group_by(race_ethnicity) %>%
+                    summarise(frequence = n()/nrow(filtered_survey)*100, type="higher eduction"), 
+                  filtered_survey %>% filter(edu_high==0)%>% group_by(race_ethnicity) %>%
+                    summarise(frequence = n()/nrow(filtered_survey)*100, type="not higher education"))
+
+state_data <- rbind(filtered_survey %>% filter(edu_high==1)%>% group_by(state) %>%
+                    summarise(frequence = n()/nrow(filtered_survey)*100, type="higher eduction"), 
+                  filtered_survey %>% filter(edu_high==0)%>% group_by(state) %>%
+                    summarise(frequence = n()/nrow(filtered_survey)*100, type="not higher education"))
+
+employment_data <- rbind(filtered_survey %>% filter(edu_high==1)%>% group_by(employment) %>%
+                    summarise(frequence = n()/nrow(filtered_survey)*100, type="higher eduction"), 
+                  filtered_survey %>% filter(edu_high==0)%>% group_by(employment) %>%
+                    summarise(frequence = n()/nrow(filtered_survey)*100, type="not higher education"))
+
+```
+
+```{r plot1, echo=F, include=F}
+# show all selected variables seperated by treatment
+age <- ggplot(age_data, aes(x=age, y=frequence, group = type, color = type)) +
+  geom_line() +theme(legend.position="none"+scale_color_manual())
+
+gender <- ggplot(gender_data, aes(x=gender, y=frequence, group = type, color = type)) +
+  geom_line() +theme(legend.position="none"+ scale_color_manual())
+
+household_income <- ggplot(household_income_data, aes(x=household_income, y=frequence, group = type, color = type)) +
+  geom_line() +theme(legend.position="none"+ scale_color_manual())
+
+race_ethnicity <- ggplot(race_ethnicity_data, aes(x=race_ethnicity, y=frequence, group = type, color = type)) +
+  geom_line() +theme(legend.position="none"+ scale_color_manual())
+
+state <- ggplot(state_data, aes(x=state, y=frequence, group = type, color = type)) +
+  geom_line() +theme(legend.position="none"+ scale_color_manual())
+
+employment <- ggplot(employment_data, aes(x=employment, y=frequence, group = type, color = type)) +
+  geom_line() +theme(legend.position="none"+ scale_color_manual())
+
+```
+
+```{r echo=F, include=F}
+# Propensity Score matching for the higher education
+
+# Construct a logistic regression model that explains a person was treated
+propensity_score <- glm(edu_high ~ age + gender + household_income 
+                        + employment + race_ethnicity + state, 
+                        family = binomial,
+                        data = filtered_survey)
+
+# Add forecast to the dataset
+filtered_survey <- augment(propensity_score, data = filtered_survey,
+                           type.predict = "response") %>% 
+  dplyr::select(-.resid, -.std.resid, -.hat, -.sigma, -.cooksd) 
+
+# Use forecast to create matches
+# For every person who was actually treated (with higher education), want the untreated person 
+# who was considered as similar to them as possible (based on the propensity score)
+filtered_survey <- filtered_survey %>% arrange(.fitted, edu_high)
+
+# Use a matching function which is the closest of the ones that were not treated, 
+# to each one that was treated.
+filtered_survey$treated <- if_else(filtered_survey$edu_high == 0, 0, 1)
+
+filtered_survey$treated  <- as.integer(filtered_survey$treated )
+
+matches <- arm::matching(z = filtered_survey$treated , 
+                         score = filtered_survey$.fitted)
+
+filtered_survey <- cbind(filtered_survey, matches)
+
+
+# Reduce the dataset to just those that are matched. We had 2694 treated, so we expect 
+# a dataset of 5388 observations.
+filtered_survey_matched <- 
+  filtered_survey %>% 
+  filter(match.ind != 0) %>% 
+  dplyr::select(-match.ind, -pairs, -treated)
+
+head(filtered_survey_matched)
+
+```
+
+```{r echo=F , include=F}
+# Examining the 'effect' of being treated on average spend in the 'usual' way.
+# relevel: logistic to predict "voting for Biden"
+filtered_survey_matched$vote_2020 <- relevel(filtered_survey_matched$vote_2020, ref = "Donald Trump")  
+
+propensity_score_regression <- glm(vote_2020 ~ age + gender + household_income + employment + state + race_ethnicity + edu_high, 
+                                   family = binomial,
+                                   data = filtered_survey_matched)
+```
+
+
+# **Abstract** 
+
+  In this study, the dataset retrieved from Democracy Fund Voter Study Group was used to investigate how propensity score matching is used to make causal inferences between higher education and voting preferences of voters for 2020 U.S. presidential election.  Although there are some bias in propensity score matching, the results of the propensity score model indicated that highly educated voters are more likely to choose Biden as the next president of the United States.
+  
+  
+
+
+# **Keywords**
+
+Key words: Propensity Score, Causal Inference, Higher education, President election
+
+
+
+
+# **Introduction**
+
+  Today, people who receive higher education generally have more opportunities for jobs and higher overall quality of life. They might have realized the benefits of higher education and thus may be more concerned about this field. Policies formulated by the president, such as cutting college costs,  play a very important role in the development of higher education. People who care about higher education might vote for the one that will advance a comprehensive higher education agenda.\par
+
+  The purpose of this project is to analyze the effects of higher education on voters’ preferences for candidates of U.S. Presidential election 2020. Firstly, data retrieved from Democracy Fund Voter Study Group will be organized by Propensity Score Matching. To be more specific, treated and controlled observations will be matched on the estimated probability of being treated while the treatment is the higher education. Then, a logistic regression model with age, gender, household income, employment, state, race_ethnicity, and higher education assumed as correlated variables will be conducted to see whether this treatment is statistically significant. If the answer is yes, then we will be able to make a causal inference that voters with higher education levels are more likely or less likely to choose Biden as the next U.S. president. \par 
+
+  The following sections explain how to use propensity score matching to make causal inferences between higher education and voting preferences. The data, propensity score matching method and propensity score analysis model will be described in the "Methodology" section. The analysis results will be provided in the "Results" section, and the causal inferences and conclusions of the data will be provided in the "Conclusions" section.\par 
+
+
+
+
+
+
+# **Methodology**
+
+## Data:
+
+  The dataset is obtained from Democracy Foundation + UCLA Nationscape survey data (2020) conducted by Democracy Foundation + UCLA Nationscape. The Democracy Foundation + UCLA Nationscape survey data (2020) was collected by interviewing people in almost every county, congressional district, and medium-sized city in the United States before the 2020 U.S.presidential election. There are 6,479 observations in the dataset and 265 variables. Not all variables are needed, so only a few of them are selected for this project. The selected variables and their categories are shown in the following table.\par
+
+\newpage
+
+variable | category
+-----------|:-----------: |
+Age | discrete
+Registration  | categorical
+Vote_intention |  categorical
+Vote_2020 |  categorical
+Gender | categorical
+Race_ethnicity | categorical
+Education | categorical
+Employment | categorical
+State | categorical
+household_income | categorical
+
+
+**Table.1**
+
+```{r echo=F}
+Table1<-CreateTableOne(strata="edu_high",data = filtered_survey)
+Table1
+
+```
+
+
+```{r echo=F}
+Figure1 <- ggarrange(age, gender, household_income, race_ethnicity, state, employment,  nrow = 6)
+annotate_figure(Figure1, top = text_grob("Figure 1: Higher education v.s. Not higher education"))
+```
+
+
+  Table.1 reports the baseline characteristics of the data separated by treatment groups( higher education). In the table, the discrete variable, age, is summarized by means and standard deviations while categorical variables, such as gender and state, are summarized by frequency, The p-value printed along with the table is generated using hypothesis test: chisq.test() for categorical variables and oneway.test() for continuous variables, to compare the characteristics between two groups. From Table.1, it can be seen that the p-value of all variables in the table, except for Vote_intention, are smaller than 0.001, which is a threshold for statistical significance. Thus, these variables are good fits for explanatory variables of the regression model. From Figure.1, the differences in characteristics between the treatment group and the control group(higher education and not higher education) can also be seen more intuitively. It is shown that there are not so much differences between the two groups.\par
+
+
+## Propensity Score matching
+
+  Propensity score matching is a statistical technique that matches treated and controlled group on the propensity score, which is the estimated probability of being treated. In this case, higher education is the treatment and the propensity score was calculated in the following logistic regression model:
+\[
+log(\frac{\widehat{p}}{1-\widehat{p}}) = \hat{\beta_0} + \hat{\beta_1}x_{age} + \hat{\beta_2}x_{gender} + \hat{\beta_3}x_{householdincome}  + \hat{\beta_4}x_{raceethnicity} + \hat{\beta_5}x_{state}
+\]
+where p represents the probability to have higher education. $x_i$(i=1~5) correspond to the values of age and the levels of gender, household income, state, and Race ethnicity. Age, gender, household income, state,and race_ethnicity are the predictor variables. $\beta_i$(i=2~5) are estimate coefficients, $\beta_0$ is an intercept.
+Then, for every person who was treated with higher education, we find the untreated person who was considered as the closest match based on the propensity score. After that, the dataset was reduced to just those that are matched. At last, the effect of being treated on Vote preference in the 2020 presidential election could be examined in the 'usual' way.\par
+
+
+## Model:
+
+  The logistic regression model that we are interested in estimating is:
+\[
+log(\frac{\widehat{p}}{1-\widehat{p}}) = \hat{\beta_0} + \hat{\beta_1}x_{age} + \hat{\beta_2}x_{gender} + \hat{\beta_3}x_{householdincome}  + \hat{\beta_4}x_{raceethnicity} + \hat{\beta_5}x_{state} + \hat{\beta_6}x_{highereducation}
+\]
+where p represents the probability to vote for Biden during 2020 presidential election. $x_i$(i=1~6) correspond to the values of age and the levels of gender, household income, Race ethnicity, state, and higher education. Age, gender, household income, state, race_ethnicity, and higher education are the predictor variables. $\beta_i$(i=2~6) are estimate coefficients, $\beta_0$ is an intercept.\par
+
+
+
+
+
+
+# **Results**
+
+```{r echo=F}
+# summary of regression after propensity score matching
+beta<- coef(propensity_score_regression)
+p_value = format(summary(propensity_score_regression)$coe[,4], scientific = TRUE, digits=3)
+print(cbind(beta, as.numeric(p_value)),
+      col.names = c('Estimated', 'P value'),
+      caption = "Summary of Model")
+```
+
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  The Propensity score regression is based on age, gender, household income, employment, state, race_ethinicity, and higher education and it looks for the proportion of voters who are more willing to vote for Biden.\par
+  
+  The results of the model show that age, gender, household income, employment, race_ethnicity, and higher education are significant predictors of voters' preferences because their p-value is less than 0.05. Moreover, age, gender, and higher education are especially significant in influencing voters’ preferences because their p-value is less than 0.001.\par
+
+  The propensity score adjusted data can be used to assess the causality of treatment (higher education). It can be seen from the table that the coefficient of edu_high is 0.268. This means that for the person with higher education, the log odds of the percentage of voters who are more willing to vote for Biden will increase by 0.268.\par
+
+
+
+
+
+# **Discussion** 
+
+## Summary
+
+  The Democracy Foundation + UCLA Nationscape survey data (2020) was used to analyze the effects of higher education on voters’ preferences for candidates of the U.S. Presidential election 2020. Firstly, a few variables were selected from the original dataset. Then, the dataset was adjusted by propensity score matching while the treatment is higher education. Finally, a propensity score regression was conducted to draw causal inferences about the treatment.\par
+
+## Conclusions
+
+  The results of the propensity score regression indicated that the treatment of higher education is statistically significant. It also assessed the causality of treatment, that is, highly educated voters are more likely to choose Biden as the next president of the United States. The results show that for those with higher education, the log odds of the proportion of voters who are more willing to vote for Biden will increase by 0.268.\par
+
+  People with higher education may have realized the benefits brought by higher education. They may vote for the one that will formulate the policies that benefit education. Therefore, inferences about the causal relationship between higher education and voting preferences can provide references to government agencies in advancing a comprehensive higher education agenda. Also, today, higher education is an important contribution to the country’s competitiveness in the global market and is vital to economic strength, social well-being, and world leadership. In other words, the development of high education is closely related to the future of society. Hence, it is necessary for the government to pay more attention to higher education.\par
+
+## Weakness & Next Steps:
+
+  There are some flaws in propensity score matching. One of them is modeling. The basic assumption for using propensity scores is that all confounders of treatment options and outcomes have been measured and included in the propensity model. The results tend to be specific to the model that is used. If the model does not include variables strongly related to both outcome and assignment, it may increase bias. From the results of the final model, it is seen that the variable of state is not statistically significant. Thus, this possibly increases bias. Also, there may be bias due to confounding factors that cannot be measured. However, if propensity scores are constructed based only on treatment covariates that are statistically significantly different between the pre-treatment and comparison groups, they will not be able to consider the relationships between the covariates and the results.\par 
+  
+  Therefore, for the next step, our goal should be creating as rich a propensity score model as possible while including a strong covariate.\par
+
+
+
+
+
+
+\newpage
+
+# **References**
+
+1. Lanza, S., Moore, J., &amp; Butera, N. (2013, December). Drawing causal inferences using propensity scores: A practical guide for community psychologists. Retrieved December 20, 2020, from https://www.ncbi.nlm.nih.gov/pmc/articles/PMC4098642/
+
+2. The Importance of Higher Education in the 21st Century. (2020, October 15). Retrieved December 06, 2020, from https://www.vistacollege.edu/blog/resources/higher-education-in-the-21st-century/
+
+3. Vote Biden: Inside Higher Ed. (n.d.). Retrieved December 06, 2020, from https://www.insidehighered.com/blogs/leadership-higher-education/vote-biden
+
+4. Tausanovitch, Chris and Lynn Vavreck. 2020. Democracy Fund + UCLA Nationscape, October 10-17, 2019 (version 20200814). Retrieved from https://www.voterstudygroup.org/downloads?key=9e6f71ed-8c3b-4238-be7b-9d332bf90590
+
+5. Republic, T., Reason, &amp; Insider, B. (2020, December 15). New: Second Nationscape Data Set Release. Retrieved December 20, 2020, from https://www.voterstudygroup.org/publication/nationscape-data-set
+
+6. Yoshida, K. (2020, July 25). Retrieved December 20, 2020, from https://cran.r-project.org/web/packages/tableone/vignettes/introduction.html
+
+7. Difference in differences. (2020, November 05). Retrieved December 20, 2020, from https://www.tellingstorieswithdata.com/06-03-matching_and_differences.html
+
+8. Teague, L.W. (2015). Higher Education Plays Critical Role in Society: More Women Leaders Can Make a Difference.
+
+9.  Hadley Wickham and Evan Miller (2020). haven: Import and Export 'SPSS', 'Stata' and 'SAS' Files.
+  http://haven.tidyverse.org, https://github.com/tidyverse/haven, https://github.com/WizardMac/ReadStat.
+  
+10.  Wickham et al., (2019). Welcome to the tidyverse. Journal of Open Source Software, 4(43), 1686,
+  https://doi.org/10.21105/joss.01686
+  
+11.  David Robinson, Alex Hayes and Simon Couch (2020). broom: Convert Statistical Objects into Tidy Tibbles.
+  https://broom.tidymodels.org/, https://github.com/tidymodels/broom.
+  
+12.  Andrew Gelman and Yu-Sung Su (2020). arm: Data Analysis Using Regression and Multilevel/Hierarchical Models. R
+  package version 1.11-2. https://CRAN.R-project.org/package=arm
+  
+13.  Joseph Larmarange (2020). labelled: Manipulating Labelled Data. R package version 2.7.0.
+  http://larmarange.github.io/labelled/
+  
+  
+14.  Alboukadel Kassambara (2020). ggpubr: 'ggplot2' Based Publication Ready Plots. R package version 0.4.0.
+  https://rpkgs.datanovia.com/ggpubr/
+  
+15.  Venables, W. N. & Ripley, B. D. (2002) Modern Applied Statistics with S. Fourth Edition. Springer, New York.
+  ISBN 0-387-95457-0
+  
+16.  Kazuki Yoshida and Alexander Bartel (2020). tableone: Create 'Table 1' to Describe Baseline Characteristics
+  with or without Propensity Score Weights. R package version 0.12.0. https://github.com/kaz-yos/tableone
+
+
+
+
+
+
